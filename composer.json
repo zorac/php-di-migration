@@ -1,0 +1,16 @@
+{
+    "name": "zorac/php-di-migration",
+    "type": "library",
+    "description": "Eases migration from PHP-DI 6 annotations to PHP-DI 7 attributes",
+    "homepage": "https://github.com/zorac/php-di-migration",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "DI\\": "src/"
+        }
+    },
+    "require": {
+        "php": ">=8.0",
+        "php-di/php-di": "^6.0"
+    }
+}
