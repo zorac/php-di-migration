@@ -12,5 +12,9 @@
     "require": {
         "php": ">=8.0",
         "php-di/php-di": "^6.0"
+    },
+    "require-dev": {
+        "doctrine/annotations": "~1.10",
+        "phpstan/phpstan": "^1.2"
     }
 }

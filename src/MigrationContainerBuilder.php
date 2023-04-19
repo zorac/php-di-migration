@@ -6,6 +6,8 @@ namespace DI;
 
 use DI\Compiler\Compiler;
 use DI\Definition\Source\AnnotationBasedAutowiring;
+use DI\Definition\Source\AttributeAndAnnotationBasedAutowiring;
+use DI\Definition\Source\AttributeBasedAutowiring;
 use DI\Definition\Source\DefinitionArray;
 use DI\Definition\Source\DefinitionFile;
 use DI\Definition\Source\DefinitionSource;
@@ -19,6 +21,9 @@ use Psr\Container\ContainerInterface;
 
 /**
  * Helper to create and configure a Container.
+ *
+ * php-di-migration: This migration builder can create a container which
+ * supports annotations (as per PHP-DI 6), attrivutes (as per PHP-DI-7) or both.
  *
  * With the default options, the container created is appropriate for the development environment.
  *
@@ -50,6 +55,11 @@ class MigrationContainerBuilder
      * @var bool
      */
     private $useAutowiring = true;
+
+    /**
+     * @var bool
+     */
+    private $useAttributes = false;
 
     /**
      * @var bool
@@ -130,7 +140,14 @@ class MigrationContainerBuilder
     {
         $sources = array_reverse($this->definitionSources);
 
-        if ($this->useAnnotations) {
+        if ($this->useAttributes) {
+            if ($this->useAnnotations) {
+                $autowiring = new AttributeAndAnnotationBasedAutowiring($this->ignorePhpDocErrors);;
+            } else {
+                $autowiring = new AttributeBasedAutowiring;
+            }
+            $sources[] = $autowiring;
+        } elseif ($this->useAnnotations) {
             $autowiring = new AnnotationBasedAutowiring($this->ignorePhpDocErrors);
             $sources[] = $autowiring;
         } elseif ($this->useAutowiring) {
@@ -233,6 +250,22 @@ class MigrationContainerBuilder
         $this->ensureNotLocked();
 
         $this->useAutowiring = $bool;
+
+        return $this;
+    }
+
+    /**
+     * Enable or disable the use of PHP 8 attributes to configure injections.
+     *
+     * Disabled by default.
+     *
+     * @return $this
+     */
+    public function useAttributes(bool $bool) : self
+    {
+        $this->ensureNotLocked();
+
+        $this->useAttributes = $bool;
 
         return $this;
     }

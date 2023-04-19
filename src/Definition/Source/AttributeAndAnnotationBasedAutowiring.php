@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace DI\Definition\Source;
 
-use DI\Annotation\Inject;
-use DI\Annotation\Injectable;
+use DI\Annotation\Inject as InjectAnnotation;
+use DI\Annotation\Injectable as InjectableAnnotation;
+use DI\Attribute\Inject as InjectAttribute;
+use DI\Attribute\Injectable as InjectableAttribute;
 use DI\Definition\Exception\InvalidAnnotation;
+use DI\Definition\Exception\InvalidAttribute;
 use DI\Definition\ObjectDefinition;
 use DI\Definition\ObjectDefinition\MethodInjection;
 use DI\Definition\ObjectDefinition\PropertyInjection;
@@ -22,9 +25,11 @@ use ReflectionNamedType;
 use ReflectionParameter;
 use ReflectionProperty;
 use UnexpectedValueException;
+use Throwable;
 
 /**
- * Provides DI definitions by reading annotations such as @ Inject and @ var annotations.
+ * Provides DI definitions by reading annotations such as @ Inject and @ var annotations
+ * and PHP 8 attributes such as #[Inject] and #[Injectable].
  *
  * Uses Autowiring, Doctrine's Annotations and regex docblock parsing.
  * This source automatically includes the reflection source.
@@ -66,6 +71,7 @@ class AttributeAndAnnotationBasedAutowiring implements DefinitionSource, Autowir
         $class = new ReflectionClass($className);
 
         $this->readInjectableAnnotation($class, $definition);
+        $this->readInjectableAttribute($class, $definition);
 
         // Browse the class properties looking for annotated properties
         $this->readProperties($class, $definition);
@@ -103,7 +109,8 @@ class AttributeAndAnnotationBasedAutowiring implements DefinitionSource, Autowir
             if ($property->isStatic()) {
                 continue;
             }
-            $this->readProperty($property, $definition);
+            $this->readPropertyAnnotation($property, $definition);
+            $this->readPropertyAttribute($property, $definition);
         }
 
         // Read also the *private* properties of the parent classes
@@ -113,16 +120,17 @@ class AttributeAndAnnotationBasedAutowiring implements DefinitionSource, Autowir
                 if ($property->isStatic()) {
                     continue;
                 }
-                $this->readProperty($property, $definition, $class->getName());
+                $this->readPropertyAnnotation($property, $definition, $class->getName());
+                $this->readPropertyAttribute($property, $definition, $class->getName());
             }
         }
     }
 
-    private function readProperty(ReflectionProperty $property, ObjectDefinition $definition, $classname = null)
+    private function readPropertyAnnotation(ReflectionProperty $property, ObjectDefinition $definition, $classname = null)
     {
         // Look for @Inject annotation
         $annotation = $this->getAnnotationReader()->getPropertyAnnotation($property, 'DI\Annotation\Inject');
-        if (!$annotation instanceof Inject) {
+        if (!$annotation instanceof InjectAnnotation) {
             return;
         }
 
@@ -141,6 +149,57 @@ class AttributeAndAnnotationBasedAutowiring implements DefinitionSource, Autowir
         if ($entryName === null) {
             throw new InvalidAnnotation(sprintf(
                 '@Inject found on property %s::%s but unable to guess what to inject, use a @var annotation',
+                $property->getDeclaringClass()->getName(),
+                $property->getName()
+            ));
+        }
+
+        $definition->addPropertyInjection(
+            new PropertyInjection($property->getName(), new Reference($entryName), $classname)
+        );
+    }
+
+    /**
+     * @throws InvalidAttribute
+     */
+    private function readPropertyAttribute(ReflectionProperty $property, ObjectDefinition $definition, ?string $classname = null) : void
+    {
+        // Look for #[Inject] attribute
+        try {
+            $attribute = $property->getAttributes(InjectAttribute::class)[0] ?? null;
+            if (! $attribute) {
+                return;
+            }
+            /** @var InjectAttribute $inject */
+            $inject = $attribute->newInstance();
+        } catch (Throwable $e) {
+            throw new InvalidAttribute(sprintf(
+                '#[Inject] annotation on property %s::%s is malformed. %s',
+                $property->getDeclaringClass()->getName(),
+                $property->getName(),
+                $e->getMessage()
+            ), 0, $e);
+        }
+
+        // Try to #[Inject("name")] or look for the property type
+        $entryName = $inject->getName();
+
+        // Try using typed properties
+        $propertyType = $property->getType();
+        if ($entryName === null && $propertyType instanceof ReflectionNamedType) {
+            if (! class_exists($propertyType->getName()) && ! interface_exists($propertyType->getName())) {
+                throw new InvalidAttribute(sprintf(
+                    '#[Inject] found on property %s::%s but unable to guess what to inject, the type of the property does not look like a valid class or interface name',
+                    $property->getDeclaringClass()->getName(),
+                    $property->getName()
+                ));
+            }
+            $entryName = $propertyType->getName();
+        }
+
+        if ($entryName === null) {
+            throw new InvalidAttribute(sprintf(
+                '#[Inject] found on property %s::%s but unable to guess what to inject, please add a type to the property',
                 $property->getDeclaringClass()->getName(),
                 $property->getName()
             ));
@@ -181,24 +240,33 @@ class AttributeAndAnnotationBasedAutowiring implements DefinitionSource, Autowir
      */
     private function getMethodInjection(ReflectionMethod $method)
     {
-        // Look for @Inject annotation
-        try {
-            $annotation = $this->getAnnotationReader()->getMethodAnnotation($method, 'DI\Annotation\Inject');
-        } catch (InvalidAnnotation $e) {
-            throw new InvalidAnnotation(sprintf(
-                '@Inject annotation on %s::%s is malformed. %s',
-                $method->getDeclaringClass()->getName(),
-                $method->getName(),
-                $e->getMessage()
-            ), 0, $e);
-        }
+        // Look for #[Inject] attribute
+        $attribute = $method->getAttributes(InjectAttribute::class)[0] ?? null;
 
-        // @Inject on constructor is implicit
-        if (! ($annotation || $method->isConstructor())) {
-            return null;
-        }
+        if ($attribute) {
+            /** @var InjectAttribute $inject */
+            $inject = $attribute->newInstance();
+            $annotationParameters = $inject->getParameters();
+        } else {
+            // Look for @Inject annotation
+            try {
+                $annotation = $this->getAnnotationReader()->getMethodAnnotation($method, 'DI\Annotation\Inject');
+            } catch (InvalidAnnotation $e) {
+                throw new InvalidAnnotation(sprintf(
+                    '@Inject annotation on %s::%s is malformed. %s',
+                    $method->getDeclaringClass()->getName(),
+                    $method->getName(),
+                    $e->getMessage()
+                ), 0, $e);
+            }
 
-        $annotationParameters = $annotation instanceof Inject ? $annotation->getParameters() : [];
+            // @Inject on constructor is implicit
+            if (! ($annotation || $method->isConstructor())) {
+                return null;
+            }
+
+            $annotationParameters = $annotation instanceof InjectAnnotation ? $annotation->getParameters() : [];
+        }
 
         $parameters = [];
         foreach ($method->getParameters() as $index => $parameter) {
@@ -223,6 +291,15 @@ class AttributeAndAnnotationBasedAutowiring implements DefinitionSource, Autowir
      */
     private function getMethodParameter($parameterIndex, ReflectionParameter $parameter, array $annotationParameters)
     {
+        // Let's check if this parameter has an #[Inject] attribute
+        $attribute = $parameter->getAttributes(InjectAttribute::class)[0] ?? null;
+        if ($attribute) {
+            /** @var InjectAttribute $inject */
+            $inject = $attribute->newInstance();
+
+            return $inject->getName();
+        }
+
         // @Inject has definition for this parameter (by index, or by name)
         if (isset($annotationParameters[$parameterIndex])) {
             return $annotationParameters[$parameterIndex];
@@ -275,7 +352,7 @@ class AttributeAndAnnotationBasedAutowiring implements DefinitionSource, Autowir
     private function readInjectableAnnotation(ReflectionClass $class, ObjectDefinition $definition)
     {
         try {
-            /** @var Injectable|null $annotation */
+            /** @var InjectableAnnotation|null $annotation */
             $annotation = $this->getAnnotationReader()
                 ->getClassAnnotation($class, 'DI\Annotation\Injectable');
         } catch (UnexpectedValueException $e) {
@@ -292,6 +369,30 @@ class AttributeAndAnnotationBasedAutowiring implements DefinitionSource, Autowir
 
         if ($annotation->isLazy() !== null) {
             $definition->setLazy($annotation->isLazy());
+        }
+    }
+
+    /**
+     * @throws InvalidAttribute
+     */
+    private function readInjectableAttribute(ReflectionClass $class, ObjectDefinition $definition) : void
+    {
+        try {
+            $attribute = $class->getAttributes(InjectableAttribute::class)[0] ?? null;
+            if (! $attribute) {
+                return;
+            }
+            $attribute = $attribute->newInstance();
+        } catch (Throwable $e) {
+            throw new InvalidAttribute(sprintf(
+                'Error while reading #[Injectable] on %s: %s',
+                $class->getName(),
+                $e->getMessage()
+            ), 0, $e);
+        }
+
+        if ($attribute->isLazy() !== null) {
+            $definition->setLazy($attribute->isLazy());
         }
     }
 }
