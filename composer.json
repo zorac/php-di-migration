@@ -9,11 +9,17 @@
             "DI\\": "src/"
         }
     },
+    "autoload-dev": {
+        "psr-4": {
+            "DI\\Test\\Migration\\": "tests/"
+        }
+    },
     "require": {
         "php": ">=8.0",
         "php-di/php-di": "^6.0"
     },
     "require-dev": {
+        "phpunit/phpunit": "^9.5",
         "doctrine/annotations": "~1.10",
         "phpstan/phpstan": "^1.2"
     }
